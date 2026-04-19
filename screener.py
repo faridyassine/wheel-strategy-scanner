@@ -1,5 +1,6 @@
 # screener.py — Option chain analysis and best CSP finder
 # Analyse de la chaîne d'options et recherche du meilleur Cash Secured Put
+from __future__ import annotations
 
 import logging
 from datetime import date, datetime, timedelta

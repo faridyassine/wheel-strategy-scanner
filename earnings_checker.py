@@ -1,5 +1,6 @@
 # earnings_checker.py — Earnings date verification for the Wheel Strategy Scanner
 # Vérification des dates de résultats d'entreprise (earnings)
+from __future__ import annotations
 
 import logging
 from datetime import date, datetime

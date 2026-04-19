@@ -18,6 +18,7 @@ WATCHLIST = [
     "XOM",    # ExxonMobil
     "GLD",    # Gold ETF
     "SOFI",   # SoFi Technologies
+    "SLV",    # Silver ETF
 ]
 
 # === Thresholds — Seuils de filtrage ===

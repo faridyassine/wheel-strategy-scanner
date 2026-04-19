@@ -1,5 +1,6 @@
 # indicators.py — Technical indicators for the Wheel Strategy Scanner
 # Indicateurs techniques : RSI, moyennes mobiles, IV Rank, volatilité historique
+from __future__ import annotations
 
 import logging
 import numpy as np
