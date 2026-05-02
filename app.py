@@ -2,14 +2,159 @@
 # Interface visuelle pour le scanner de stratégie de la roue
 from __future__ import annotations
 
+import os
+
 import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
 import yfinance as yf
 
+try:
+    from groq import Groq
+except Exception:
+    Groq = None
+
 import config
 import scanner
 import screener
+import telegram_bot
+import telegram_notifier
+
+
+def _get_groq_api_key() -> str | None:
+    """Returns Groq API key from session, Streamlit secrets, or environment."""
+    session_key = st.session_state.get("groq_api_key")
+    if session_key:
+        return session_key
+
+    secret_key = None
+    try:
+        secret_key = st.secrets.get("GROQ_API_KEY")
+    except Exception:
+        secret_key = None
+    if secret_key:
+        return secret_key
+
+    return os.getenv("GROQ_API_KEY")
+
+
+def _build_chat_context(results: list[dict] | None, opportunities: list[dict] | None) -> str:
+    """Builds compact context from latest scan to help chatbot answers."""
+    if not results:
+        return (
+            "Aucun scan exécuté pour le moment. "
+            "L'utilisateur peut poser des questions générales sur la Wheel Strategy."
+        )
+
+    passing_count = sum(1 for r in results if r.get("passes_all"))
+    tickers = [r.get("ticker", "?") for r in results[:20]]
+    top_opps = (opportunities or [])[:5]
+    top_opp_text = [
+        (
+            f"{o.get('ticker', '?')}: strike={o.get('strike')}, premium={o.get('premium')}, "
+            f"dte={o.get('dte')}, return30j={o.get('monthly_return_pct')}%"
+        )
+        for o in top_opps
+    ]
+
+    return (
+        f"Résultats scan: {len(results)} tickers, {passing_count} passent les filtres. "
+        f"Tickers: {', '.join(tickers)}. "
+        f"Top opportunités CSP: {' | '.join(top_opp_text) if top_opp_text else 'Aucune'}"
+    )
+
+
+def _ask_groq(chat_messages: list[dict], context: str) -> str:
+    """Calls Groq chat completion with app context."""
+    if Groq is None:
+        return (
+            "Le package `groq` n'est pas disponible dans cet environnement. "
+            "Installe-le avec `pip install groq`."
+        )
+
+    api_key = _get_groq_api_key()
+    if not api_key:
+        return (
+            "Ajoute ta clé API Groq (`GROQ_API_KEY`) dans les variables d'environnement "
+            "ou dans le champ dédié de l'interface."
+        )
+
+    client = Groq(api_key=api_key)
+    history = chat_messages[-8:] if len(chat_messages) > 8 else chat_messages
+    messages = [
+        {
+            "role": "system",
+            "content": (
+                "Tu es un assistant francophone expert en Wheel Strategy. "
+                "Réponds de façon claire, concise, pédagogique. "
+                "N'invente pas de données et précise quand une information manque. "
+                "Rappelle que ce n'est pas un conseil financier."
+            ),
+        },
+        {"role": "system", "content": f"Contexte application: {context}"},
+        *history,
+    ]
+
+    response = client.chat.completions.create(
+        model="llama-3.1-8b-instant",
+        messages=messages,
+        temperature=0.2,
+        max_tokens=500,
+    )
+    content = response.choices[0].message.content
+    return content.strip() if content else "Je n'ai pas pu générer de réponse."
+
+
+def _render_chatbot(results: list[dict] | None = None, opportunities: list[dict] | None = None) -> None:
+    """Renders chatbot UI and handles message flow."""
+    st.subheader("🤖 Assistant Wheel (Groq)")
+    st.caption("Pose des questions sur IVR, HV30, choix de strikes, DTE, ou résultats du scan.")
+
+    if "chat_messages" not in st.session_state:
+        st.session_state.chat_messages = [
+            {
+                "role": "assistant",
+                "content": (
+                    "Salut 👋 Je peux expliquer les métriques du scanner et t'aider "
+                    "à interpréter les opportunités CSP."
+                ),
+            }
+        ]
+
+    with st.expander("⚙️ Configuration API Groq", expanded=False):
+        st.caption("Option 1: variable d'environnement `GROQ_API_KEY` (recommandé)")
+        st.caption("Option 2: coller la clé ici pour la session courante")
+        user_api_key = st.text_input(
+            "GROQ API Key (session)",
+            type="password",
+            key="groq_api_key_input",
+            placeholder="gsk_...",
+        )
+        if user_api_key:
+            st.session_state.groq_api_key = user_api_key.strip()
+            st.success("Clé Groq chargée pour cette session.")
+
+    context = _build_chat_context(results, opportunities)
+
+    for message in st.session_state.chat_messages:
+        with st.chat_message(message["role"]):
+            st.markdown(message["content"])
+
+    prompt = st.chat_input("Ex: Pourquoi AAPL passe et TSLA échoue ?")
+    if prompt:
+        st.session_state.chat_messages.append({"role": "user", "content": prompt})
+        with st.chat_message("user"):
+            st.markdown(prompt)
+
+        with st.chat_message("assistant"):
+            with st.spinner("Réflexion en cours..."):
+                try:
+                    answer = _ask_groq(st.session_state.chat_messages, context)
+                except Exception as exc:
+                    answer = f"Erreur Groq: {exc}"
+                st.markdown(answer)
+
+        st.session_state.chat_messages.append({"role": "assistant", "content": answer})
 
 
 @st.cache_data(ttl=3600, show_spinner=False)
@@ -139,6 +284,55 @@ with st.sidebar:
     st.markdown("---")
     run_btn = st.button("🚀 Lancer le scan", use_container_width=True, type="primary")
 
+    st.markdown("---")
+    st.subheader("📩 Telegram")
+    tg_token = st.text_input(
+        "Bot Token",
+        value=st.session_state.get("tg_token", config.TELEGRAM_BOT_TOKEN),
+        type="password",
+        placeholder="123456:ABC-DEF...",
+        key="tg_token_input",
+    )
+    tg_chat_id = st.text_input(
+        "Chat ID",
+        value=st.session_state.get("tg_chat_id", config.TELEGRAM_CHAT_ID),
+        placeholder="-100123456789",
+        key="tg_chat_id_input",
+    )
+    if tg_token:
+        st.session_state.tg_token = tg_token.strip()
+    if tg_chat_id:
+        st.session_state.tg_chat_id = tg_chat_id.strip()
+    if st.button("🔔 Tester la connexion Telegram", use_container_width=True):
+        ok, msg = telegram_notifier.send_message(
+            "✅ Wheel Scanner connecté !",
+            token=st.session_state.get("tg_token") or config.TELEGRAM_BOT_TOKEN,
+            chat_id=st.session_state.get("tg_chat_id") or config.TELEGRAM_CHAT_ID,
+        )
+        st.success(msg) if ok else st.error(msg)
+
+    st.markdown("---")
+    st.subheader("🤖 Bot Telegram ↔️ Groq")
+    bot_running = telegram_bot.is_polling()
+    st.caption("🟢 Bot actif" if bot_running else "🔴 Bot arrêté")
+
+    if not bot_running:
+        if st.button("▶️ Démarrer le bot", use_container_width=True):
+            _tg_token = st.session_state.get("tg_token") or config.TELEGRAM_BOT_TOKEN
+            _groq_key = st.session_state.get("groq_api_key") or os.getenv("GROQ_API_KEY", "")
+            ok, msg = telegram_bot.start_polling(_tg_token, _groq_key)
+            st.success(msg) if ok else st.error(msg)
+            st.rerun()
+    else:
+        if st.button("⏹️ Arrêter le bot", use_container_width=True):
+            telegram_bot.stop_polling()
+            st.info("⏹️ Bot Telegram arrêté.")
+            st.rerun()
+
+    st.markdown("---")
+    if st.button("🧹 Vider l'historique du chat", use_container_width=True):
+        st.session_state.chat_messages = []
+
 # ── Main area ──────────────────────────────────────────────────────────────────
 st.title("🎡 Wheel Strategy Scanner")
 st.caption("Scanner automatique de Cash Secured Put — données en temps réel via yfinance")
@@ -150,6 +344,8 @@ if "opportunities" not in st.session_state:
     st.session_state.opportunities = []
 if "long_term_rows" not in st.session_state:
     st.session_state.long_term_rows = None
+if "chat_messages" not in st.session_state:
+    st.session_state.chat_messages = []
 
 # ── Run scan ───────────────────────────────────────────────────────────────────
 if run_btn:
@@ -173,6 +369,7 @@ if run_btn:
         st.session_state.results = results
         st.session_state.opportunities = opportunities
         st.session_state.long_term_rows = None
+        telegram_bot.update_scan_context(results, opportunities)
     st.success("✅ Scan terminé !")
 
 # ── Display results ─────────────────────────────────────────────────────────────
@@ -196,13 +393,14 @@ if st.session_state.results:
     st.markdown("---")
 
     # ── Tabs ──────────────────────────────────────────────────────────────────
-    tab1, tab2, tab3, tab4, tab5 = st.tabs(
+    tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs(
         [
             "📋 Tableau complet",
             "💰 Opportunités CSP",
             "📈 Graphiques",
             "⚠️ Alertes Earnings",
             "🏦 Achat Long Terme",
+            "🤖 Chatbot",
         ]
     )
 
@@ -272,12 +470,24 @@ if st.session_state.results:
 
         # Download CSV
         csv_data = df.to_csv(index=False).encode("utf-8")
-        st.download_button(
-            "⬇️ Télécharger CSV",
-            data=csv_data,
-            file_name="wheel_scan.csv",
-            mime="text/csv",
-        )
+        col_dl, col_tg = st.columns(2)
+        with col_dl:
+            st.download_button(
+                "⬇️ Télécharger CSV",
+                data=csv_data,
+                file_name="wheel_scan.csv",
+                mime="text/csv",
+            )
+        with col_tg:
+            if st.button("📩 Envoyer résumé Telegram", use_container_width=True, key="tg_summary"):
+                passing = [r for r in results if r.get("passes_all")]
+                text = telegram_notifier.build_scan_summary(results, opportunities)
+                ok, msg = telegram_notifier.send_message(
+                    text,
+                    token=st.session_state.get("tg_token") or config.TELEGRAM_BOT_TOKEN,
+                    chat_id=st.session_state.get("tg_chat_id") or config.TELEGRAM_CHAT_ID,
+                )
+                st.success(msg) if ok else st.error(msg)
 
     # ── Tab 2 : CSP Opportunities ─────────────────────────────────────────────
     with tab2:
@@ -339,6 +549,15 @@ if st.session_state.results:
                 }, na_rep="N/A")
             )
             st.dataframe(styled_opp, use_container_width=True)
+
+            if st.button("📩 Envoyer opportunités Telegram", use_container_width=True, key="tg_opps"):
+                text = telegram_notifier.build_opportunities_message(opportunities)
+                ok, msg = telegram_notifier.send_message(
+                    text,
+                    token=st.session_state.get("tg_token") or config.TELEGRAM_BOT_TOKEN,
+                    chat_id=st.session_state.get("tg_chat_id") or config.TELEGRAM_CHAT_ID,
+                )
+                st.success(msg) if ok else st.error(msg)
 
             # Best pick highlight
             best = df_opp.iloc[0]
@@ -538,6 +757,10 @@ if st.session_state.results:
             else:
                 st.warning("Aucune donnée long terme disponible pour le moment.")
 
+    # ── Tab 6 : Chatbot ──────────────────────────────────────────────────────
+    with tab6:
+        _render_chatbot(results=results, opportunities=opportunities)
+
 else:
     # ── Welcome screen ────────────────────────────────────────────────────────
     st.markdown(
@@ -564,3 +787,5 @@ else:
         unsafe_allow_html=False,
     )
     st.info("👈 Configurez et lancez le scan depuis le panneau de gauche.")
+    st.markdown("---")
+    _render_chatbot(results=None, opportunities=None)
