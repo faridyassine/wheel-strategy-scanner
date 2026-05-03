@@ -286,18 +286,16 @@ with st.sidebar:
 
     st.markdown("---")
     st.subheader("📩 Telegram")
-    _default_token = os.getenv("TELEGRAM_BOT_TOKEN", "")
-    _default_chat_id = os.getenv("TELEGRAM_CHAT_ID", "")
     tg_token = st.text_input(
         "Bot Token",
-        value=st.session_state.get("tg_token", _default_token),
+        value=st.session_state.get("tg_token", os.getenv("TELEGRAM_BOT_TOKEN", "")),
         type="password",
         placeholder="123456:ABC-DEF...",
         key="tg_token_input",
     )
     tg_chat_id = st.text_input(
         "Chat ID",
-        value=st.session_state.get("tg_chat_id", _default_chat_id),
+        value=st.session_state.get("tg_chat_id", os.getenv("TELEGRAM_CHAT_ID", "")),
         placeholder="-100123456789",
         key="tg_chat_id_input",
     )
