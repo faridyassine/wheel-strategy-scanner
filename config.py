@@ -1,6 +1,8 @@
 # config.py — Configuration for the Wheel Strategy Scanner
 # Fichier de configuration pour le scanner de stratégie de la roue
 
+import os
+
 # === Watchlist — Liste des titres à surveiller ===
 WATCHLIST = [
     "AAPL",   # Apple
@@ -55,3 +57,12 @@ HV_WINDOW = 30
 
 # Nombre de jours de trading dans une année (pour annualisation HV)
 TRADING_DAYS_PER_YEAR = 252
+
+# === Telegram ===
+# Token du bot Telegram (obtenu via @BotFather)
+# Chargé depuis la variable d'environnement TELEGRAM_BOT_TOKEN
+TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
+
+# Chat ID du destinataire (utilisateur ou groupe)
+# Chargé depuis la variable d'environnement TELEGRAM_CHAT_ID
+TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "")

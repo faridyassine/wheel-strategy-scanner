@@ -286,16 +286,18 @@ with st.sidebar:
 
     st.markdown("---")
     st.subheader("📩 Telegram")
+    _default_token = os.getenv("TELEGRAM_BOT_TOKEN", "")
+    _default_chat_id = os.getenv("TELEGRAM_CHAT_ID", "")
     tg_token = st.text_input(
         "Bot Token",
-        value=st.session_state.get("tg_token", config.TELEGRAM_BOT_TOKEN),
+        value=st.session_state.get("tg_token", _default_token),
         type="password",
         placeholder="123456:ABC-DEF...",
         key="tg_token_input",
     )
     tg_chat_id = st.text_input(
         "Chat ID",
-        value=st.session_state.get("tg_chat_id", config.TELEGRAM_CHAT_ID),
+        value=st.session_state.get("tg_chat_id", _default_chat_id),
         placeholder="-100123456789",
         key="tg_chat_id_input",
     )
@@ -304,10 +306,12 @@ with st.sidebar:
     if tg_chat_id:
         st.session_state.tg_chat_id = tg_chat_id.strip()
     if st.button("🔔 Tester la connexion Telegram", use_container_width=True):
+        _token = st.session_state.get("tg_token") or os.getenv("TELEGRAM_BOT_TOKEN", "")
+        _chat_id = st.session_state.get("tg_chat_id") or os.getenv("TELEGRAM_CHAT_ID", "")
         ok, msg = telegram_notifier.send_message(
             "✅ Wheel Scanner connecté !",
-            token=st.session_state.get("tg_token") or config.TELEGRAM_BOT_TOKEN,
-            chat_id=st.session_state.get("tg_chat_id") or config.TELEGRAM_CHAT_ID,
+            token=_token,
+            chat_id=_chat_id,
         )
         st.success(msg) if ok else st.error(msg)
 
@@ -318,7 +322,7 @@ with st.sidebar:
     # Auto-start once per Streamlit session when credentials are available.
     if not bot_running and not st.session_state.get("tg_autostart_attempted", False):
         st.session_state.tg_autostart_attempted = True
-        _tg_token = st.session_state.get("tg_token") or config.TELEGRAM_BOT_TOKEN
+        _tg_token = st.session_state.get("tg_token") or os.getenv("TELEGRAM_BOT_TOKEN", "")
         _groq_key = st.session_state.get("groq_api_key") or os.getenv("GROQ_API_KEY", "")
         if _tg_token and _groq_key:
             ok, msg = telegram_bot.start_polling(_tg_token, _groq_key)
@@ -337,7 +341,7 @@ with st.sidebar:
 
     if not bot_running:
         if st.button("▶️ Démarrer le bot", use_container_width=True):
-            _tg_token = st.session_state.get("tg_token") or config.TELEGRAM_BOT_TOKEN
+            _tg_token = st.session_state.get("tg_token") or os.getenv("TELEGRAM_BOT_TOKEN", "")
             _groq_key = st.session_state.get("groq_api_key") or os.getenv("GROQ_API_KEY", "")
             ok, msg = telegram_bot.start_polling(_tg_token, _groq_key)
             st.success(msg) if ok else st.error(msg)
@@ -501,10 +505,12 @@ if st.session_state.results:
             if st.button("📩 Envoyer résumé Telegram", use_container_width=True, key="tg_summary"):
                 passing = [r for r in results if r.get("passes_all")]
                 text = telegram_notifier.build_scan_summary(results, opportunities)
+                _token = st.session_state.get("tg_token") or os.getenv("TELEGRAM_BOT_TOKEN", "")
+                _chat_id = st.session_state.get("tg_chat_id") or os.getenv("TELEGRAM_CHAT_ID", "")
                 ok, msg = telegram_notifier.send_message(
                     text,
-                    token=st.session_state.get("tg_token") or config.TELEGRAM_BOT_TOKEN,
-                    chat_id=st.session_state.get("tg_chat_id") or config.TELEGRAM_CHAT_ID,
+                    token=_token,
+                    chat_id=_chat_id,
                 )
                 st.success(msg) if ok else st.error(msg)
 
@@ -571,10 +577,12 @@ if st.session_state.results:
 
             if st.button("📩 Envoyer opportunités Telegram", use_container_width=True, key="tg_opps"):
                 text = telegram_notifier.build_opportunities_message(opportunities)
+                _token = st.session_state.get("tg_token") or os.getenv("TELEGRAM_BOT_TOKEN", "")
+                _chat_id = st.session_state.get("tg_chat_id") or os.getenv("TELEGRAM_CHAT_ID", "")
                 ok, msg = telegram_notifier.send_message(
                     text,
-                    token=st.session_state.get("tg_token") or config.TELEGRAM_BOT_TOKEN,
-                    chat_id=st.session_state.get("tg_chat_id") or config.TELEGRAM_CHAT_ID,
+                    token=_token,
+                    chat_id=_chat_id,
                 )
                 st.success(msg) if ok else st.error(msg)
 
