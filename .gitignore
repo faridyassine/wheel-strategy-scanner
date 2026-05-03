@@ -11,6 +11,9 @@ venv/
 env/
 ENV/
 
+# Local secrets
+.env
+
 # Distribution / packaging
 dist/
 build/

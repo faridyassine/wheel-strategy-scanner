@@ -3,6 +3,13 @@
 
 import os
 
+try:
+    from dotenv import load_dotenv
+    load_dotenv()
+except Exception:
+    # dotenv is optional at import time; os.getenv still works with exported vars.
+    pass
+
 # === Watchlist — Liste des titres à surveiller ===
 WATCHLIST = [
     "AAPL",   # Apple
