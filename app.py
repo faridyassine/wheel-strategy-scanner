@@ -314,7 +314,26 @@ with st.sidebar:
     st.markdown("---")
     st.subheader("🤖 Bot Telegram ↔️ Groq")
     bot_running = telegram_bot.is_polling()
+
+    # Auto-start once per Streamlit session when credentials are available.
+    if not bot_running and not st.session_state.get("tg_autostart_attempted", False):
+        st.session_state.tg_autostart_attempted = True
+        _tg_token = st.session_state.get("tg_token") or config.TELEGRAM_BOT_TOKEN
+        _groq_key = st.session_state.get("groq_api_key") or os.getenv("GROQ_API_KEY", "")
+        if _tg_token and _groq_key:
+            ok, msg = telegram_bot.start_polling(_tg_token, _groq_key)
+            st.session_state.tg_autostart_msg = msg
+            if ok:
+                st.rerun()
+
     st.caption("🟢 Bot actif" if bot_running else "🔴 Bot arrêté")
+
+    autostart_msg = st.session_state.pop("tg_autostart_msg", None)
+    if autostart_msg:
+        if telegram_bot.is_polling():
+            st.success(f"Auto-start: {autostart_msg}")
+        else:
+            st.warning(f"Auto-start: {autostart_msg}")
 
     if not bot_running:
         if st.button("▶️ Démarrer le bot", use_container_width=True):
