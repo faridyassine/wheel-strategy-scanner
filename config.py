@@ -56,6 +56,20 @@ EARNINGS_SAFE_DAYS = 30
 RSI_MIN = 40
 RSI_MAX = 65
 
+# === Swing Trading thresholds — Seuils Swing Trading ===
+# RSI cible pour setups swing
+SWING_RSI_MIN = 45
+SWING_RSI_MAX = 65
+
+# Momentum minimum sur 20 jours (%)
+SWING_MIN_MOMENTUM_20D = 2.0
+
+# Volume moyen minimum sur 20 jours
+SWING_MIN_AVG_VOLUME = 1_000_000
+
+# Volatilité historique max (HV30 %) pour limiter les setups trop instables
+SWING_MAX_HV30 = 60.0
+
 # Période RSI (jours)
 RSI_PERIOD = 14
 

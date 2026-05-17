@@ -38,7 +38,11 @@ def _get_groq_api_key() -> str | None:
     return os.getenv("GROQ_API_KEY")
 
 
-def _build_chat_context(results: list[dict] | None, opportunities: list[dict] | None) -> str:
+def _build_chat_context(
+    results: list[dict] | None,
+    opportunities: list[dict] | None,
+    swing_opportunities: list[dict] | None,
+) -> str:
     """Builds compact context from latest scan to help chatbot answers."""
     if not results:
         return (
@@ -57,10 +61,20 @@ def _build_chat_context(results: list[dict] | None, opportunities: list[dict] | 
         for o in top_opps
     ]
 
+    top_swing = (swing_opportunities or [])[:5]
+    top_swing_text = [
+        (
+            f"{s.get('ticker', '?')}: momentum20d={s.get('momentum_20d')}%, "
+            f"rsi={s.get('rsi')}, hv30={s.get('hv_30')}%"
+        )
+        for s in top_swing
+    ]
+
     return (
         f"Résultats scan: {len(results)} tickers, {passing_count} passent les filtres. "
         f"Tickers: {', '.join(tickers)}. "
-        f"Top opportunités CSP: {' | '.join(top_opp_text) if top_opp_text else 'Aucune'}"
+        f"Top opportunités CSP: {' | '.join(top_opp_text) if top_opp_text else 'Aucune'}. "
+        f"Top opportunités Swing: {' | '.join(top_swing_text) if top_swing_text else 'Aucune'}"
     )
 
 
@@ -105,7 +119,11 @@ def _ask_groq(chat_messages: list[dict], context: str) -> str:
     return content.strip() if content else "Je n'ai pas pu générer de réponse."
 
 
-def _render_chatbot(results: list[dict] | None = None, opportunities: list[dict] | None = None) -> None:
+def _render_chatbot(
+    results: list[dict] | None = None,
+    opportunities: list[dict] | None = None,
+    swing_opportunities: list[dict] | None = None,
+) -> None:
     """Renders chatbot UI and handles message flow."""
     st.subheader("🤖 Assistant Wheel (Groq)")
     st.caption("Pose des questions sur IVR, HV30, choix de strikes, DTE, ou résultats du scan.")
@@ -134,7 +152,7 @@ def _render_chatbot(results: list[dict] | None = None, opportunities: list[dict]
             st.session_state.groq_api_key = user_api_key.strip()
             st.success("Clé Groq chargée pour cette session.")
 
-    context = _build_chat_context(results, opportunities)
+    context = _build_chat_context(results, opportunities, swing_opportunities)
 
     for message in st.session_state.chat_messages:
         with st.chat_message(message["role"]):
@@ -271,6 +289,30 @@ with st.sidebar:
     min_oi = st.number_input("Open Interest minimum", value=config.MIN_OPEN_INTEREST, step=100)
     earnings_safe_days = st.slider("Sécurité earnings (jours)", 7, 90, config.EARNINGS_SAFE_DAYS)
 
+    with st.expander("📈 Filtres Swing Trading", expanded=False):
+        swing_rsi_min = st.slider("Swing RSI min", 0, 100, config.SWING_RSI_MIN)
+        swing_rsi_max = st.slider("Swing RSI max", 0, 100, config.SWING_RSI_MAX)
+        swing_momentum_min = st.slider(
+            "Momentum 20j min (%)",
+            -20.0,
+            30.0,
+            float(config.SWING_MIN_MOMENTUM_20D),
+            0.5,
+        )
+        swing_min_avg_vol = st.number_input(
+            "Volume moyen 20j min",
+            min_value=10000,
+            value=int(config.SWING_MIN_AVG_VOLUME),
+            step=100000,
+        )
+        swing_max_hv30 = st.slider(
+            "HV30 max (%)",
+            10.0,
+            150.0,
+            float(config.SWING_MAX_HV30),
+            1.0,
+        )
+
     # Override config temporarily for the scan
     config.MIN_IV_RANK = min_iv_rank
     config.RSI_MIN = rsi_min
@@ -280,6 +322,11 @@ with st.sidebar:
     config.MIN_PREMIUM = min_premium
     config.MIN_OPEN_INTEREST = int(min_oi)
     config.EARNINGS_SAFE_DAYS = earnings_safe_days
+    config.SWING_RSI_MIN = swing_rsi_min
+    config.SWING_RSI_MAX = swing_rsi_max
+    config.SWING_MIN_MOMENTUM_20D = float(swing_momentum_min)
+    config.SWING_MIN_AVG_VOLUME = int(swing_min_avg_vol)
+    config.SWING_MAX_HV30 = float(swing_max_hv30)
 
     st.markdown("---")
     run_btn = st.button("🚀 Lancer le scan", use_container_width=True, type="primary")
@@ -367,6 +414,8 @@ if "long_term_rows" not in st.session_state:
     st.session_state.long_term_rows = None
 if "chat_messages" not in st.session_state:
     st.session_state.chat_messages = []
+if "swing_results" not in st.session_state:
+    st.session_state.swing_results = None
 
 # ── Run scan ───────────────────────────────────────────────────────────────────
 if run_btn:
@@ -389,19 +438,22 @@ if run_btn:
 
         st.session_state.results = results
         st.session_state.opportunities = opportunities
+        st.session_state.swing_results = scanner.scan_all_swing(watchlist)
         st.session_state.long_term_rows = None
-        telegram_bot.update_scan_context(results, opportunities)
+        telegram_bot.update_scan_context(results, opportunities, st.session_state.swing_results)
     st.success("✅ Scan terminé !")
 
 # ── Display results ─────────────────────────────────────────────────────────────
 if st.session_state.results:
     results = st.session_state.results
     opportunities = st.session_state.opportunities
+    swing_results = st.session_state.swing_results or []
     passing_count = sum(1 for r in results if r.get("passes_all"))
+    swing_count = sum(1 for r in swing_results if r.get("passes_swing"))
 
     # ── KPI Metrics ──────────────────────────────────────────────────────────
     st.markdown("### 📊 Résumé")
-    col1, col2, col3, col4 = st.columns(4)
+    col1, col2, col3, col4, col5 = st.columns(5)
     col1.metric("Tickers scannés", len(results))
     col2.metric("✅ Passent les filtres", passing_count)
     col3.metric("💰 Opportunités CSP", len(opportunities))
@@ -410,14 +462,16 @@ if st.session_state.results:
         if opportunities else 0
     )
     col4.metric("📈 Rendement 30j moyen", f"{avg_yield}%")
+    col5.metric("📊 Opportunités Swing", swing_count)
 
     st.markdown("---")
 
     # ── Tabs ──────────────────────────────────────────────────────────────────
-    tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs(
+    tab1, tab2, tab3, tab4, tab5, tab6, tab7 = st.tabs(
         [
             "📋 Tableau complet",
             "💰 Opportunités CSP",
+            "📈 Opportunités Swing",
             "📈 Graphiques",
             "⚠️ Alertes Earnings",
             "🏦 Achat Long Terme",
@@ -594,8 +648,62 @@ if st.session_state.results:
             c3.metric("Rendement 30j", f"{best['Rendement 30j (%)']:.2f}%")
             c4.metric("Expiration", best["Expiration"])
 
-    # ── Tab 3 : Charts ────────────────────────────────────────────────────────
+    # ── Tab 3 : Swing opportunities ──────────────────────────────────────────
     with tab3:
+        st.subheader("📈 Opportunités Swing Trading")
+        passing_swing = [r for r in swing_results if r.get("passes_swing")]
+
+        if not swing_results:
+            st.warning("Aucun résultat Swing disponible. Lance un scan.")
+        elif not passing_swing:
+            st.warning("⚠️ Aucune opportunité Swing trouvée avec les critères actuels.")
+            df_fail = pd.DataFrame([
+                {
+                    "Ticker": r.get("ticker"),
+                    "Raison": r.get("reason_failed", ""),
+                }
+                for r in swing_results
+            ])
+            st.dataframe(df_fail, use_container_width=True, height=380)
+        else:
+            df_swing = pd.DataFrame([
+                {
+                    "Ticker": r.get("ticker"),
+                    "Prix ($)": r.get("price"),
+                    "RSI": r.get("rsi"),
+                    "MA20": r.get("ma20"),
+                    "MA50": r.get("ma50"),
+                    "Momentum 20j (%)": r.get("momentum_20d"),
+                    "Volume moy 20j": r.get("avg_volume_20d"),
+                    "HV30 (%)": r.get("hv_30"),
+                    "Prochains Earl.": r.get("next_earnings", "N/A"),
+                    "J. avant Earl.": r.get("days_to_earnings"),
+                }
+                for r in passing_swing
+            ]).sort_values(["Momentum 20j (%)", "RSI"], ascending=[False, True])
+
+            styled_swing = df_swing.style.format(
+                {
+                    "Prix ($)": "{:.2f}",
+                    "RSI": "{:.1f}",
+                    "MA20": "{:.2f}",
+                    "MA50": "{:.2f}",
+                    "Momentum 20j (%)": "{:.2f}%",
+                    "Volume moy 20j": "{:,.0f}",
+                    "HV30 (%)": "{:.1f}%",
+                },
+                na_rep="N/A",
+            )
+            st.dataframe(styled_swing, use_container_width=True, height=430)
+
+            best_swing = df_swing.iloc[0]
+            s1, s2, s3 = st.columns(3)
+            s1.metric("Top swing", best_swing["Ticker"])
+            s2.metric("Momentum 20j", f"{best_swing['Momentum 20j (%)']:.2f}%")
+            s3.metric("RSI", f"{best_swing['RSI']:.1f}")
+
+    # ── Tab 4 : Charts ────────────────────────────────────────────────────────
+    with tab4:
         st.subheader("📈 Visualisation des indicateurs")
 
         tickers_clean = [r["ticker"] for r in results]
@@ -689,8 +797,8 @@ if st.session_state.results:
             )
             st.plotly_chart(fig_scatter, use_container_width=True)
 
-    # ── Tab 4 : Earnings Warnings ─────────────────────────────────────────────
-    with tab4:
+    # ── Tab 5 : Earnings Warnings ─────────────────────────────────────────────
+    with tab5:
         st.subheader("⚠️ Alertes Earnings")
 
         danger = [r for r in results if not r.get("earnings_safe", True)]
@@ -724,8 +832,8 @@ if st.session_state.results:
             if not df_safe.empty:
                 st.dataframe(df_safe, use_container_width=True)
 
-    # ── Tab 5 : Long-term stock checklist ────────────────────────────────────
-    with tab5:
+    # ── Tab 6 : Long-term stock checklist ────────────────────────────────────
+    with tab6:
         st.subheader("🏦 Checklist d'achat Long Terme")
         st.caption("Module additionnel. Les fonctionnalités options CSP existantes sont inchangées.")
 
@@ -782,9 +890,13 @@ if st.session_state.results:
             else:
                 st.warning("Aucune donnée long terme disponible pour le moment.")
 
-    # ── Tab 6 : Chatbot ──────────────────────────────────────────────────────
-    with tab6:
-        _render_chatbot(results=results, opportunities=opportunities)
+    # ── Tab 7 : Chatbot ──────────────────────────────────────────────────────
+    with tab7:
+        _render_chatbot(
+            results=results,
+            opportunities=opportunities,
+            swing_opportunities=[r for r in swing_results if r.get("passes_swing")],
+        )
 
 else:
     # ── Welcome screen ────────────────────────────────────────────────────────
@@ -799,7 +911,7 @@ else:
         1. 📋 **Configurez votre watchlist** dans le panneau gauche
         2. 🎛️ **Ajustez les filtres** (IV Rank, RSI, DTE, etc.)
         3. 🚀 **Cliquez sur "Lancer le scan"**
-        4. 📊 **Explorez les résultats** dans les 4 onglets
+        4. 📊 **Explorez les résultats** dans les onglets (CSP, Swing, graphes, etc.)
 
         ### Ce qui est analysé pour chaque ticker :
         | Critère | Description |
@@ -813,4 +925,4 @@ else:
     )
     st.info("👈 Configurez et lancez le scan depuis le panneau de gauche.")
     st.markdown("---")
-    _render_chatbot(results=None, opportunities=None)
+    _render_chatbot(results=None, opportunities=None, swing_opportunities=None)

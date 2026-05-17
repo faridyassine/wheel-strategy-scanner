@@ -11,7 +11,9 @@
 #   /scan <TICKER>    — scanne un ticker (RSI, IVR, uptrend, earnings)
 #   /scan <TICKER> <PRIX> — scan + meilleur covered call si acheté à PRIX
 #   /scan wheel <TICKER> — scan + meilleur CSP (put)
+#   /scan swing <TICKER> — scan swing trading (momentum, tendance, volume, HV)
 #   /csp <TICKER>     — trouve le meilleur CSP (put) pour un ticker
+#   /swing <TICKER>   — trouve une opportunité swing pour un ticker
 #
 # Utilise le long-polling Telegram (getUpdates) dans un thread daemon.
 # Ce module est lancé depuis app.py via start_polling().
@@ -41,13 +43,19 @@ _MAX_HISTORY = 12  # messages gardés en contexte
 _scan_context: dict = {
     "results": None,
     "opportunities": None,
+    "swing_results": None,
 }
 
 
-def update_scan_context(results: list[dict] | None, opportunities: list[dict] | None) -> None:
+def update_scan_context(
+    results: list[dict] | None,
+    opportunities: list[dict] | None,
+    swing_results: list[dict] | None = None,
+) -> None:
     """Called from app.py after each scan to keep the bot context up to date."""
     _scan_context["results"] = results
     _scan_context["opportunities"] = opportunities
+    _scan_context["swing_results"] = swing_results
 
 
 # ── Telegram helpers ──────────────────────────────────────────────────────────
@@ -79,6 +87,7 @@ def _send_typing(token: str, chat_id: str | int) -> None:
 def _build_context_text() -> str:
     results = _scan_context.get("results")
     opportunities = _scan_context.get("opportunities") or []
+    swing_results = _scan_context.get("swing_results") or []
 
     if not results:
         return (
@@ -89,6 +98,8 @@ def _build_context_text() -> str:
     passing_count = sum(1 for r in results if r.get("passes_all"))
     tickers = [r.get("ticker", "?") for r in results[:20]]
     top_opps = opportunities[:5]
+    passing_swing = [r for r in swing_results if r.get("passes_swing")]
+    top_swing = passing_swing[:5]
     top_opp_text = [
         (
             f"{o.get('ticker','?')}: strike={o.get('strike')}, premium={o.get('premium')}, "
@@ -96,10 +107,18 @@ def _build_context_text() -> str:
         )
         for o in top_opps
     ]
+    top_swing_text = [
+        (
+            f"{s.get('ticker', '?')}: momentum20d={s.get('momentum_20d')}%, "
+            f"rsi={s.get('rsi')}, hv30={s.get('hv_30')}%"
+        )
+        for s in top_swing
+    ]
     return (
         f"Résultats scan: {len(results)} tickers, {passing_count} passent les filtres. "
         f"Tickers: {', '.join(tickers)}. "
-        f"Top opportunités CSP: {' | '.join(top_opp_text) if top_opp_text else 'Aucune'}"
+        f"Top opportunités CSP: {' | '.join(top_opp_text) if top_opp_text else 'Aucune'}. "
+        f"Top opportunités Swing: {' | '.join(top_swing_text) if top_swing_text else 'Aucune'}"
     )
 
 
@@ -197,6 +216,8 @@ def _poll(token: str, groq_api_key: str, stop_event: threading.Event) -> None:
                       "`/scan AAPL` — scanner un ticker\n"
                       "`/scan SLV 70` — scan + meilleur covered call si acheté à 70\n"
                       "`/scan wheel MSFT` — scan + meilleur CSP/Put\n"
+                      "`/scan swing NVDA` — scan swing d'un ticker\n"
+                      "`/swing AAPL` — commande swing directe\n"
                       "`/top` — top 20 actions/ETFs actifs & volatils\n"
                       "`/watchlist` — voir la watchlist\n"
                       "`/results` — derniers résultats\n\n"
@@ -220,7 +241,9 @@ def _poll(token: str, groq_api_key: str, stop_event: threading.Event) -> None:
                       "`/scan TICKER` — scanner un ticker (ex: `/scan AAPL`)\n"
                       "`/scan TICKER PRIX` — scan + meilleur Covered Call (ex: `/scan SLV 70`)\n"
                       "`/scan wheel TICKER` — scan + meilleur CSP/Put (ex: `/scan wheel MSFT`)\n"
+                      "`/scan swing TICKER` — scan swing (ex: `/scan swing NVDA`)\n"
                       "`/csp TICKER` — meilleur CSP/Put pour un ticker (ex: `/csp NVDA`)\n"
+                      "`/swing TICKER` — meilleur setup swing pour un ticker\n"
                       "`/top` — top 20 actions/ETFs les plus actifs et volatils\n"
                       "`/top 10` — top N (max 30)\n\n"
                       "Tu peux aussi écrire librement pour poser des questions à l'assistant IA.")
@@ -236,15 +259,28 @@ def _poll(token: str, groq_api_key: str, stop_event: threading.Event) -> None:
             # Commande /results — affiche les derniers résultats de scan
             if text == "/results":
                 results = _scan_context.get("results")
+                swing_results = _scan_context.get("swing_results") or []
                 if not results:
                     _send(token, chat_id, "⚠️ Aucun scan exécuté pour le moment.")
                 else:
                     passing = [r for r in results if r.get("passes_all")]
-                    lines = [f"📊 *Derniers résultats ({len(results)} tickers, {len(passing)} ✅ PASS) :*\n"]
+                    passing_swing = [r for r in swing_results if r.get("passes_swing")]
+                    lines = [
+                        f"📊 *Derniers résultats ({len(results)} tickers, {len(passing)} ✅ Wheel PASS, "
+                        f"{len(passing_swing)} 📈 Swing PASS) :*\n"
+                    ]
                     for r in results:
                         icon = "✅" if r.get("passes_all") else "❌"
                         price = f"${r.get('price', '?'):.2f}" if r.get("price") else "?"
                         lines.append(f"{icon} `{r.get('ticker')}` {price}")
+
+                    if passing_swing:
+                        top = sorted(
+                            passing_swing,
+                            key=lambda x: x.get("momentum_20d") or -999,
+                            reverse=True,
+                        )[:5]
+                        lines.append("\n📈 *Top Swing:* " + ", ".join(f"`{r.get('ticker')}`" for r in top))
                     _send(token, chat_id, "\n".join(lines))
                 continue
 
@@ -255,10 +291,15 @@ def _poll(token: str, groq_api_key: str, stop_event: threading.Event) -> None:
             if cmd == "/scan":
                 # /scan TICKER  ou  /scan TICKER COST_BASIS  ou  /scan wheel TICKER
                 if len(cmd_parts) == 1:
-                    _send(token, chat_id, "⚠️ Usage : `/scan TICKER` ou `/scan TICKER PRIX` ou `/scan wheel TICKER`")
+                    _send(
+                        token,
+                        chat_id,
+                        "⚠️ Usage : `/scan TICKER` ou `/scan TICKER PRIX` ou `/scan wheel TICKER` ou `/scan swing TICKER`",
+                    )
                     continue
 
                 wheel_mode = False
+                swing_mode = False
                 ticker_arg = ""
                 cost_basis = None
 
@@ -267,6 +308,12 @@ def _poll(token: str, groq_api_key: str, stop_event: threading.Event) -> None:
                         _send(token, chat_id, "⚠️ Usage : `/scan wheel TICKER`")
                         continue
                     wheel_mode = True
+                    ticker_arg = cmd_parts[2].upper()
+                elif cmd_parts[1].lower() == "swing":
+                    if len(cmd_parts) < 3:
+                        _send(token, chat_id, "⚠️ Usage : `/scan swing TICKER`")
+                        continue
+                    swing_mode = True
                     ticker_arg = cmd_parts[2].upper()
                 else:
                     ticker_arg = cmd_parts[1].upper()
@@ -279,6 +326,34 @@ def _poll(token: str, groq_api_key: str, stop_event: threading.Event) -> None:
                             continue
 
                 _send_typing(token, chat_id)
+                if swing_mode:
+                    swing = _scanner.scan_swing_ticker(ticker_arg)
+                    status = "✅ PASS" if swing.get("passes_swing") else "❌ FAIL"
+                    price = f"${swing.get('price'):.2f}" if swing.get("price") else "N/A"
+                    rsi = f"{swing.get('rsi'):.1f}" if swing.get("rsi") else "N/A"
+                    ma20 = f"{swing.get('ma20'):.2f}" if swing.get("ma20") else "N/A"
+                    ma50 = f"{swing.get('ma50'):.2f}" if swing.get("ma50") else "N/A"
+                    mom = f"{swing.get('momentum_20d'):.2f}%" if swing.get("momentum_20d") is not None else "N/A"
+                    avg_vol = f"{swing.get('avg_volume_20d'):,.0f}" if swing.get("avg_volume_20d") else "N/A"
+                    hv = f"{swing.get('hv_30'):.1f}%" if swing.get("hv_30") else "N/A"
+                    earnings = swing.get("next_earnings", "N/A")
+                    reason = swing.get("reason_failed") or "—"
+
+                    msg = (
+                        f"📈 *Scan Swing : {ticker_arg}*\n\n"
+                        f"Statut : {status}\n"
+                        f"Prix : {price}\n"
+                        f"RSI : {rsi}\n"
+                        f"MA20 / MA50 : {ma20} / {ma50}\n"
+                        f"Momentum 20j : {mom}\n"
+                        f"Volume moy 20j : {avg_vol}\n"
+                        f"HV30 : {hv}\n"
+                        f"Prochains résultats : {earnings}\n"
+                        f"Raison(s) échec : {reason}"
+                    )
+                    _send(token, chat_id, msg)
+                    continue
+
                 result = _scanner.scan_ticker(ticker_arg)
                 icon = "✅ PASS" if result.get("passes_all") else f"❌ FAIL"
                 price = f"${result.get('price'):.2f}" if result.get("price") else "N/A"
@@ -342,6 +417,42 @@ def _poll(token: str, groq_api_key: str, stop_event: threading.Event) -> None:
                         msg += "\n\n⚠️ Aucun Covered Call éligible trouvé pour ce ticker."
 
                 _send(token, chat_id, msg)
+                continue
+
+            if cmd == "/swing":
+                if len(cmd_parts) < 2:
+                    _send(token, chat_id, "⚠️ Usage : `/swing TICKER`")
+                    continue
+
+                ticker_arg = cmd_parts[1].upper()
+                _send_typing(token, chat_id)
+                swing = _scanner.scan_swing_ticker(ticker_arg)
+
+                status = "✅ PASS" if swing.get("passes_swing") else "❌ FAIL"
+                price = f"${swing.get('price'):.2f}" if swing.get("price") else "N/A"
+                rsi = f"{swing.get('rsi'):.1f}" if swing.get("rsi") else "N/A"
+                ma20 = f"{swing.get('ma20'):.2f}" if swing.get("ma20") else "N/A"
+                ma50 = f"{swing.get('ma50'):.2f}" if swing.get("ma50") else "N/A"
+                mom = f"{swing.get('momentum_20d'):.2f}%" if swing.get("momentum_20d") is not None else "N/A"
+                avg_vol = f"{swing.get('avg_volume_20d'):,.0f}" if swing.get("avg_volume_20d") else "N/A"
+                hv = f"{swing.get('hv_30'):.1f}%" if swing.get("hv_30") else "N/A"
+                earnings = swing.get("next_earnings", "N/A")
+                reason = swing.get("reason_failed") or "—"
+
+                _send(
+                    token,
+                    chat_id,
+                    f"📈 *Swing Setup : {ticker_arg}*\n\n"
+                    f"Statut : {status}\n"
+                    f"Prix : {price}\n"
+                    f"RSI : {rsi}\n"
+                    f"MA20 / MA50 : {ma20} / {ma50}\n"
+                    f"Momentum 20j : {mom}\n"
+                    f"Volume moy 20j : {avg_vol}\n"
+                    f"HV30 : {hv}\n"
+                    f"Prochains résultats : {earnings}\n"
+                    f"Raison(s) échec : {reason}",
+                )
                 continue
 
             if cmd == "/csp":
